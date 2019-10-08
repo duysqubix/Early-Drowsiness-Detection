@@ -2,6 +2,8 @@ import sys
 import tensorflow as tf
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
+import pickle
+import datetime
 
 
 class HMLSTM:
@@ -10,6 +12,7 @@ class HMLSTM:
     training_steps = None
     validation_steps = None
     scaler = None
+    loss_history = {}
 
     def __init__(self, batch_size=64, time_step=30, num_features=4, d_hidden_size=64, r_hidden_size=32, activation='relu', output_activation='softmax', num_layers=4):
         self.batch_size = batch_size
@@ -76,15 +79,17 @@ class HMLSTM:
         label = tf.keras.utils.to_categorical(label)
         return label
 
-    def compile_dataset(self, scale=True):
-        blinks_train = np.load("data_train.npy").astype(np.float32)
-        blinks_test = np.load("data_test.npy").astype(np.float32)
+    def compile_dataset(self, blinks_path, labels_path, scale=True):
+        blinks_train = np.load("{}.npy".format(
+            blinks_path[0])).astype(np.float32)
+        blinks_test = np.load("{}.npy".format(
+            blinks_path[1])).astype(np.float32)
 
         labels_train = self._parse_labels(
-            np.load("labels_train.npy").astype(np.uint8))
+            np.load("{}.npy".format(labels_path[0])).astype(np.uint8))
 
         labels_test = self._parse_labels(
-            np.load("labels_test.npy").astype(np.uint8))
+            np.load("{}.npy".format(labels_path[1])).astype(np.uint8))
 
         if scale:
             blinks_train, scaler_dict = self.scale_data(
@@ -103,9 +108,50 @@ class HMLSTM:
 
         return blinks_train, labels_train
 
-    def fit(self, epochs=5):
-        self.model.fit(self.train_dataset, epochs=epochs, steps_per_epoch=self.training_steps,
-                       validation_steps=self.validation_steps, shuffle=True, validation_data=self.test_dataset)
+    def fit(self, epochs=5, **kwargs):
+        history = self.model.fit(self.train_dataset, epochs=epochs, steps_per_epoch=self.training_steps,
+                                 validation_steps=self.validation_steps, shuffle=True, validation_data=self.test_dataset)
+        self.loss_history["fold_{}".format(kwargs['fold'])] = history.history
+
+    def kfold_fit(self, num_folds=5, epochs=80):
+        self.loss_history = {}
+        for fold in range(num_folds):
+            fold += 1  # to line up with recorded blink events
+
+            # get data to train
+            blink_train_path = "folds/Blinks_30_Fold{}".format(fold)
+            blink_test_path = "folds/BlinksTest_30_Fold{}".format(fold)
+
+            blink_train_label = "folds/Labels_30_Fold{}".format(fold)
+            blink_test_label = "folds/LabelsTest_30_Fold{}".format(fold)
+
+            blinks_path, labels_path = (
+                blink_train_path, blink_test_path), (blink_train_label, blink_test_label)
+            print(blinks_path)
+            print(labels_path)
+            # update internal datasets:
+            self.compile_dataset(blinks_path=blinks_path,
+                                 labels_path=labels_path, scale=True)
+
+            # now train:
+            self.fit(epochs=epochs, fold=fold)
+
+        current_time = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
+
+        # save loss_history
+        with open("model_and_weights/{}_loss.history".format(current_time), "wb") as f:
+            pickle.dump(self.loss_history, f)
+            print("Saved Loss History")
+
+        # save weights of the model
+        file_name_weights = "{}_weights.h5".format(current_time)
+        self.model.save_weights(
+            "model_and_weights/{}".format(file_name_weights))
+
+        # save model json as pickle
+        file_name_model = "{}_model.json".format(current_time)
+        with open("model_and_weights/{}".format(file_name_model), "wb") as f:
+            pickle.dump(self.model.to_json(), f)
 
 
 def compare(pred, actual, num=4):
@@ -122,15 +168,4 @@ if __name__ == '__main__':
     model = HMLSTM(output_activation='softmax', activation='relu')
     model.model.summary()
     print(model.model.optimizer)
-    x, y = model.compile_dataset(scale=True)
-    if '-w' in sys.argv:
-        try:
-            model.model.load_weights("model.weights")
-            print("loaded weights")
-        except FileNotFoundError:
-            pass
-    model.fit(epochs=5)
-    model.model.save_weights("model.weights")
-
-    pred = model.model.predict(x)
-    compare(pred, y)
+    model.kfold_fit(epochs=1)
