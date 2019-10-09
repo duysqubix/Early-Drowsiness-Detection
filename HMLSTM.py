@@ -166,6 +166,5 @@ def compare(pred, actual, num=4):
 
 if __name__ == '__main__':
     model = HMLSTM(output_activation='softmax', activation='relu')
-    model.model.summary()
     print(model.model.optimizer)
-    model.kfold_fit(epochs=1)
+    model.kfold_fit(epochs=80)
